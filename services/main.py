@@ -1,4 +1,8 @@
 import numpy as np
+import json
+
+from resistances.frictional import frictional_resistance
+
 
 holtrop_data = {
     'is_ocean': False,
@@ -28,76 +32,117 @@ holtrop_data = {
         'bilge_keels': {'amount': 0, 'area': 0, 'value': 1.4},
     },
     'C_STERN': 0,
-    'speed': 16.0
+    'speeds': [16.0, 15.0]
 }
 
 
-class Ship:
+class Constants:
     WATER_DENSITY_OCEAN = 1025.0
     WATER_DENSITY_RIVER = 1000.0
     GRAVITY = 9.81
     # VISCOSIDADE CINEMÁTICA DA ÁGUA A 25°C
     WATER_VISCOSITY_CINEMATIC = 0.000000893
 
-    def __init__(self, data):
-        for key, value in data.items():
-            setattr(self, key, value)
 
-        self.c_coefficients = {}
+class Ship(Constants):
+    def __init__(self, data={}):
+        self.form_coefficients = {}
+        self.parameters = {}
+        self.speeds = {}
+
+        self.is_ocean = data['is_ocean']
+        self.parameters['LPP'] = data['LPP']
+        self.parameters['LWL'] = data['LWL']
+        self.parameters['breadth'] = data['breadth']
+        self.parameters['draught'] = (
+            data['draught_AP'] + data['draught_FP'])/2
+        self.parameters['displacement'] = data['displacement']
+        self.parameters['LCB_midship'] = ((data['LCB_AP']+data['LWL']-data['LPP']) -
+                                          0.5*data['LWL'])*100/data['LWL']
+
+        self.parameters['transversal_bulb_area'] = data['transversal_bulb_area']
+        self.parameters['center_bulb_area'] = data['center_bulb_area']
+        self.parameters['transom_area'] = data['transom_area']
+        self.parameters['appendages'] = data['appendages']
+        self.parameters['C_STERN'] = data['C_STERN']
+
+        self.form_coefficients['CM'] = data['CM']
+        self.form_coefficients['CWP'] = data['CWP']
+
+        self.__calculate_speeds(data['speeds'])
+        self.__calculate_form_coefficients()
+
+    def __calculate_speeds(self, speeds_knots):
+        speeds = {}
+        for speed_knot in speeds_knots:
+            speed_SI = (speed_knot * 1852)/3600
+            reynolds = speed_SI * \
+                self.parameters['LWL']/self.WATER_VISCOSITY_CINEMATIC
+
+            speeds[str(speed_knot)] = {'speed_SI': speed_SI,
+                                       'reynolds': reynolds
+                                       }
+
+        setattr(self, 'speeds', speeds)
+
+    def __calculate_form_coefficients(self):
+        CB = self.parameters['displacement'] / \
+            (self.parameters['breadth']*self.parameters['LWL']
+             * self.parameters['draught'])
+        CP = CB/self.form_coefficients['CM']
+
+        self.form_coefficients['CB'] = CB
+        self.form_coefficients['CP'] = CP
+
+
+class Holtrop(Constants):
+    def __init__(self, ship: Ship):
         self.ratios = {}
-        self.constants = {
-            'water_density': None,
-            'reynolds': None
-        }
-        self.resistances = {
-            'frictional': None
-        }
+        self.parameters = {}
 
-        if(self.is_ocean):
-            self.constants['water_density'] = self.WATER_DENSITY_OCEAN
+        if(ship.is_ocean):
+            self.parameters['water_density'] = self.WATER_DENSITY_OCEAN
         else:
-            self.constants['water_density'] = self.WATER_DENSITY_RIVER
+            self.parameters['water_density'] = self.WATER_DENSITY_RIVER
 
-        self.speed_SI = (self.speed * 1852)/3600
+        self.__calculate_LR(ship)
+        self.__calculate_ratios(ship)
+        self.__calculate_wetted_surface(ship)
 
-        self.constants['reynolds'] = (
-            self.speed_SI*self.LWL)/self.WATER_VISCOSITY_CINEMATIC
+    def __calculate_LR(self, ship):
+        CP = ship.form_coefficients['CP']
+        LWL = ship.parameters['LWL']
+        LCB_midship = ship.parameters['LCB_midship']
 
-        self.draught = (self.draught_AP+self.draught_FP)/2
+        LR = LWL*(1-CP+0.06*CP*LCB_midship/(4*CP-1))
+        self.parameters['LR'] = LR
 
-        self.CB = self.displacement/(self.LWL*self.breadth*self.draught)
-        self.CP = self.CB/self.CM
+    def __calculate_ratios(self, ship: Ship):
+        breadth = ship.parameters['breadth']
+        LWL = ship.parameters['LWL']
+        draught = ship.parameters['draught']
+        displacement = ship.parameters['displacement']
 
-        self.LCB_midship = ((self.LCB_AP+self.LWL-self.LPP) -
-                            0.5*self.LWL)*100/self.LWL
+        LR = self.parameters['LR']
 
-        self.__calculate_LR()
+        self.ratios['breadth_draught'] = breadth/draught
+        self.ratios['breadth_LWL'] = breadth/LWL
+        self.ratios['breadth_LR'] = breadth/LR
+        self.ratios['draught_LWL'] = draught/LWL
+        self.ratios['LWL_LR'] = LWL/LR
+        self.ratios['LWL3_displacement'] = np.power(LWL, 3)/displacement
 
-        self.ratios['breadth_draught'] = self.breadth/self.draught
-        self.ratios['breadth_LWL'] = self.breadth/self.LWL
-        self.ratios['breadth_LR'] = self.breadth/self.LR
-        self.ratios['draught_LWL'] = self.draught/self.LWL
-        self.ratios['LWL_LR'] = self.LWL/self.LR
-        self.ratios['LWL3_displacement'] = np.power(
-            self.LWL, 3)/self.displacement
+    def __calculate_wetted_surface(self, ship):
+        LWL = ship.parameters['LWL']
+        draught = ship.parameters['draught']
+        breadth = ship.parameters['breadth']
+        transversal_bulb_area = ship.parameters['transversal_bulb_area']
 
-        self.__calculate_C12()
-        self.__calculate_C14()
+        CM = ship.form_coefficients['CM']
+        CB = ship.form_coefficients['CB']
+        CWP = ship.form_coefficients['CWP']
 
-        self.__wetted_surface()
-        self.__form_factor()
-
-        self.__frictional_resistance()
-
-    def __wetted_surface(self):
-        LWL = self.LWL
-        draught = self.draught
-        breadth = self.breadth
-        CM = self.CM
-        CB = self.CB
         ratio_breadth_draught = self.ratios['breadth_draught']
-        CWP = self.CWP
-        transversal_bulb_area = self.transversal_bulb_area
 
         part_1 = LWL*(2*draught+breadth)*np.sqrt(CM)
         part_2 = (0.453+0.4425*CB-0.2862*CM-0.003467 *
@@ -106,70 +151,30 @@ class Ship:
 
         wetted_surface = part_1 * part_2 + part_3
 
-        setattr(self, 'wetted_surface', wetted_surface)
-
-    def __calculate_LR(self):
-        CP = self.CP
-        LWL = self.LWL
-        LCB_midship = self.LCB_midship
-
-        LR = LWL*(1-CP+0.06*CP*LCB_midship/(4*CP-1))
-        setattr(self, 'LR', LR)
-
-    def __calculate_C12(self):
-        draught_LWL = self.ratios['draught_LWL']
-        C12 = 0.479948
-
-        if(draught_LWL > 0.05):
-            C12 = np.power(draught_LWL, 0.2228446)
-        elif (draught_LWL <= 0.05 and draught_LWL >= 0.02):
-            C12 = 48.2*(np.power(draught_LWL-0.02, 2.078))+0.479948
-
-        self.c_coefficients['C12'] = C12
-
-    def __calculate_C14(self):
-        # 1+K1 HOLTROP 1984
-        C14 = 1 + 0.011*self.C_STERN
-        self.c_coefficients['C14'] = C14
-
-    def __form_factor(self):
-        # 1+K1 HOLTROP 1984
-        C14 = self.c_coefficients['C14']
-
-        ratio_breadth_LWL = self.ratios['breadth_LWL']
-        ratio_draught_LWL = self.ratios['draught_LWL']
-        ratio_LWL_LR = self.ratios['LWL_LR']
-        ratio_LWL3_displacement = self.ratios['LWL3_displacement']
-
-        LCB_midship = self.LCB_midship
-        CP = self.CP
-
-        part_1 = 0.487118*C14*np.power(ratio_breadth_LWL, 1.06806)
-        part_2 = np.power(ratio_draught_LWL, 0.46106)
-        part_3 = np.power(ratio_LWL_LR, 0.121563)
-        part_4 = np.power(ratio_LWL3_displacement, 0.36486)
-        part_5 = np.power(1-CP, -0.604247)
-
-        form_factor = 0.93 + (part_1 * part_2 * part_3 * part_4 * part_5)
-
-        setattr(self, 'form_factor', form_factor)
-
-    def __frictional_resistance(self):
-        water_density = self.constants['water_density']
-        speed = self.speed_SI
-        wetted_surface = self.wetted_surface
-        reynolds = self.constants['reynolds']
-        CF = 0.075/np.power(np.log10(reynolds)-2, 2)
-
-        RF = 0.0005 * water_density * np.power(speed, 2) * wetted_surface * CF
-        self.resistances['frictional'] = RF
+        self.parameters['wetted_surface'] = wetted_surface
 
 
 def main():
-
     babymetal = Ship(holtrop_data)
+    babymetal_holtrop = Holtrop(babymetal)
 
-    print(f'RF: {babymetal.resistances}')
+    resistances = {}
+
+    for (speed_knots, value) in babymetal.speeds.items():
+        speed_SI = value['speed_SI']
+        reynolds = value['reynolds']
+
+        RF = frictional_resistance(
+            speed=speed_SI, reynolds=reynolds, **babymetal.parameters, **babymetal.form_coefficients, **babymetal_holtrop.parameters, **babymetal_holtrop.ratios)
+
+        # RAPP = appendages_resistance(
+        #     speed=speed_SI, reynolds=reynolds, **babymetal.parameters, **babymetal.form_coefficients, **babymetal_holtrop.parameters, **babymetal_holtrop.ratios)
+        resistances[str(speed_knots)] = {
+            'RF': RF,
+            # 'RAPP': RAPP
+        }
+
+    print(json.dumps(resistances))
 
 
 if __name__ == "__main__":
