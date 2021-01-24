@@ -43,4 +43,4 @@ def frictional_resistance(speed=float, reynolds=float, **kwargs) -> float:
     CF = 0.075/np.power(np.log10(reynolds)-2, 2)
 
     RF = 0.0005 * water_density * np.power(speed, 2) * wetted_surface * CF
-    return RF
+    return RF, CF

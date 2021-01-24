@@ -2,7 +2,7 @@ import numpy as np
 import json
 
 from resistances.frictional import frictional_resistance
-
+from resistances.appendages import appendages_resistance
 
 holtrop_data = {
     'is_ocean': False,
@@ -19,8 +19,8 @@ holtrop_data = {
     'CWP': 0.97,
     'transom_area': 0.94,
     'appendages': {
-        'rudder_behind_skeg': {'amount': 0, 'area': 0, 'value': 2.0},
-        'rudder_behind_stern': {'amount': 0, 'area': 0, 'value': 1.5},
+        'rudder_behind_skeg': {'amount': 2, 'area': 20.0, 'value': 2.0},
+        'rudder_behind_stern': {'amount': 2, 'area': 12.0, 'value': 1.5},
         'twin-screw_balance_rudders': {'amount': 0, 'area': 0, 'value': 2.8},
         'shaft_brackets': {'amount': 0, 'area': 0, 'value': 3.0},
         'skeg': {'amount': 0, 'area': 0, 'value': 2.0},
@@ -49,6 +49,7 @@ class Ship(Constants):
         self.form_coefficients = {}
         self.parameters = {}
         self.speeds = {}
+        self.appendages = {}
 
         self.is_ocean = data['is_ocean']
         self.parameters['LPP'] = data['LPP']
@@ -63,8 +64,9 @@ class Ship(Constants):
         self.parameters['transversal_bulb_area'] = data['transversal_bulb_area']
         self.parameters['center_bulb_area'] = data['center_bulb_area']
         self.parameters['transom_area'] = data['transom_area']
-        self.parameters['appendages'] = data['appendages']
         self.parameters['C_STERN'] = data['C_STERN']
+
+        self.appendages = data['appendages']
 
         self.form_coefficients['CM'] = data['CM']
         self.form_coefficients['CWP'] = data['CWP']
@@ -158,20 +160,32 @@ def main():
     babymetal = Ship(holtrop_data)
     babymetal_holtrop = Holtrop(babymetal)
 
+    water_density = babymetal_holtrop.parameters['water_density']
     resistances = {}
 
     for (speed_knots, value) in babymetal.speeds.items():
         speed_SI = value['speed_SI']
         reynolds = value['reynolds']
 
-        RF = frictional_resistance(
-            speed=speed_SI, reynolds=reynolds, **babymetal.parameters, **babymetal.form_coefficients, **babymetal_holtrop.parameters, **babymetal_holtrop.ratios)
+        RF, CF = frictional_resistance(
+            speed=speed_SI,
+            reynolds=reynolds,
+            **babymetal.parameters,
+            **babymetal.form_coefficients,
+            **babymetal_holtrop.parameters,
+            **babymetal_holtrop.ratios
+        )
 
-        # RAPP = appendages_resistance(
-        #     speed=speed_SI, reynolds=reynolds, **babymetal.parameters, **babymetal.form_coefficients, **babymetal_holtrop.parameters, **babymetal_holtrop.ratios)
+        RAPP = appendages_resistance(
+            speed=speed_SI,
+            appendages=babymetal.appendages,
+            CF=CF,
+            water_density=water_density
+        )
+
         resistances[str(speed_knots)] = {
             'RF': RF,
-            # 'RAPP': RAPP
+            'RAPP': RAPP
         }
 
     print(json.dumps(resistances))
